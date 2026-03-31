@@ -1,0 +1,7 @@
+# KIS Trading Bot Git Ignore
+.env
+trading_log.txt
+__pycache__/
+*.pyc
+.vscode/
+.idea/
