@@ -53,9 +53,24 @@ def get_access_token():
         logger.error(f"토큰 요청 중 오류: {e}")
         sys.exit()
 
-def get_header(tr_id):
+def get_hashkey(body):
+    """Hashkey 발급 (POST 요청용)"""
+    url = f"{URL_BASE}/uapi/hashkey"
+    headers = {
+        'content-type': 'application/json',
+        'appkey': APP_KEY,
+        'appsecret': APP_SECRET,
+    }
+    res = requests.post(url, headers=headers, data=json.dumps(body))
+    if res.status_code == 200:
+        return res.json()["hashkey"]
+    else:
+        logger.error(f"Hashkey 발급 실패: {res.text}")
+        return None
+
+def get_header(tr_id, hashkey=None):
     """API 헤더 생성"""
-    return {
+    headers = {
         "Content-Type": "application/json",
         "authorization": f"Bearer {ACCESS_TOKEN}",
         "appkey": APP_KEY,
@@ -63,52 +78,68 @@ def get_header(tr_id):
         "tr_id": tr_id,
         "custtype": "P"
     }
+    if hashkey:
+        headers["hashkey"] = hashkey
+    return headers
 
 def get_volume_rank():
-    """거래량 상위/상승률 상위 종목 스캔"""
+    """거래량 상위 종목 스캔 (모의투자 미지원 대응)"""
+    # 모의투자의 경우 거래량 순위 API를 지원하지 않으므로 더미/관심 종목 반환
+    if "vts" in URL_BASE:
+        logger.info("모의투자 모드: 거래량 순위 API 대신 미리 지정된 종목 리스트를 사용합니다.")
+        # 모의투자에서 테스트 가능한 주요 종목 리스트 (삼성전자, SK하이닉스, NAVER 등)
+        return [
+            {"mksc_shrn_iscd": "005930", "hts_avls": "4000000"}, # 삼성전자
+            {"mksc_shrn_iscd": "000660", "hts_avls": "1000000"}, # SK하이닉스
+            {"mksc_shrn_iscd": "035420", "hts_avls": "300000"},  # NAVER
+            {"mksc_shrn_iscd": "005380", "hts_avls": "500000"},  # 현대차
+            {"mksc_shrn_iscd": "068270", "hts_avls": "200000"}   # 셀트리온
+        ]
+
     path = "/uapi/domestic-stock/v1/quotations/volume-rank"
-    headers = get_header("FHKST01010300")
+    headers = get_header("FHPST01710000") # 거래량 순위 TR ID 수정
     params = {
-        "fid_cond_mrkt_div_code": "J", # 주식
-        "fid_cond_scr_div_code": "20171",
-        "fid_input_iscd": "0000", # 전체
-        "fid_div_cls_code": "0", # 전체
-        "fid_blng_cls_code": "0", # 전체
-        "fid_trgt_cls_code": "111111111", # 전체
-        "fid_trgt_exls_cls_code": "0000000000",
-        "fid_input_price_1": "",
-        "fid_input_price_2": "",
-        "fid_vol_cnt": "",
-        "fid_input_date_1": ""
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_COND_SCR_DIV_CODE": "20171",
+        "FID_INPUT_ISCD": "0000",
+        "FID_DIV_CLS_CODE": "0",
+        "FID_BLNG_CLS_CODE": "0",
+        "FID_TRGT_CLS_CODE": "111111111",
+        "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+        "FID_INPUT_PRICE_1": "",
+        "FID_INPUT_PRICE_2": "",
+        "FID_VOL_CNT": "",
+        "FID_INPUT_DATE_1": ""
     }
     res = requests.get(URL_BASE + path, headers=headers, params=params)
     if res.status_code == 200:
         return res.json().get("output", [])
+    else:
+        logger.error(f"거래량 순위 조회 실패: {res.text}")
     return []
 
 def get_current_price(symbol):
     """현재가 및 상세 정보 조회"""
     path = "/uapi/domestic-stock/v1/quotations/inquire-price"
     headers = get_header("FHKST01010100")
-    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": symbol}
+    params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
     res = requests.get(URL_BASE + path, headers=headers, params=params)
     if res.status_code == 200:
         output = res.json().get("output")
         if output:
             return {
                 "price": int(output["stck_prpr"]),
-                "vol_rate": float(output["prdy_vol_vrss_prcnt"]), # 전일 대비 거래량 증가율
-                "market_cap": int(output["hts_avls"]), # 시가총액(억)
+                "vol_rate": float(output["prdy_vol_vrss_prcnt"]),
+                "market_cap": int(output["hts_avls"]),
                 "name": output.get("hts_kor_isnm", symbol)
             }
     return None
 
 def buy_market_order(symbol, qty=1):
     """시장가 매수 주문"""
-    # 실전/모의 TR_ID 구분
     tr_id = "TTTC0802U" if "vts" not in URL_BASE else "VTTC0802U"
     path = "/uapi/domestic-stock/v1/trading/order-cash"
-    headers = get_header(tr_id)
+    
     body = {
         "CANO": CANO,
         "ACNT_PRDT_CD": ACNT_PRDT_CD,
@@ -117,6 +148,10 @@ def buy_market_order(symbol, qty=1):
         "ORD_QTY": str(qty),
         "ORD_UNPR": "0"
     }
+    
+    hashkey = get_hashkey(body)
+    headers = get_header(tr_id, hashkey)
+    
     res = requests.post(URL_BASE + path, headers=headers, data=json.dumps(body))
     if res.status_code == 200:
         res_data = res.json()
@@ -133,7 +168,7 @@ def sell_market_order(symbol, qty=1):
     """시장가 매도 주문"""
     tr_id = "TTTC0801U" if "vts" not in URL_BASE else "VTTC0801U"
     path = "/uapi/domestic-stock/v1/trading/order-cash"
-    headers = get_header(tr_id)
+    
     body = {
         "CANO": CANO,
         "ACNT_PRDT_CD": ACNT_PRDT_CD,
@@ -142,14 +177,20 @@ def sell_market_order(symbol, qty=1):
         "ORD_QTY": str(qty),
         "ORD_UNPR": "0"
     }
+    
+    hashkey = get_hashkey(body)
+    headers = get_header(tr_id, hashkey)
+    
     res = requests.post(URL_BASE + path, headers=headers, data=json.dumps(body))
     if res.status_code == 200:
         res_data = res.json()
         if res_data["rt_cd"] == "0":
-            logger.info(f"[매도 주문 성공] 종목: {symbol}, 전량 매도")
+            logger.info(f"[매도 주문 성공] 종목: {symbol}, 수량: {qty}")
             return True
         else:
             logger.error(f"[매도 주문 거부] {res_data['msg1']}")
+    else:
+        logger.error(f"[매도 API 에러] {res.text}")
     return False
 
 def main():
