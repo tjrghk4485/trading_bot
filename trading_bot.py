@@ -222,35 +222,58 @@ def main():
         try:
             # 1. 탐색 단계: 매수한 종목이 없을 때
             if target_symbol is None:
-                logger.info("실시간 시장 스캔 중...")
+                logger.info("--------------------------------------------------")
+                logger.info("실시간 시장 스캔 시작...")
                 stocks = get_volume_rank()
                 
+                if not stocks:
+                    logger.warning("스캔된 종목이 없습니다. 다음 사이클을 기다립니다.")
+                    time.sleep(5)
+                    continue
+
+                logger.info(f"총 {len(stocks)}개 종목 검토 중...")
+                found_match = False
+                
                 for stock in stocks[:30]: # 상위 30개 종목 검사
-                    symbol = stock["mksc_shrn_iscd"]
+                    symbol = stock.get("mksc_shrn_iscd") or stock.get("stck_shrn_iscd")
+                    if not symbol:
+                        continue
+                        
                     m_cap = int(stock.get("hts_avls", 0)) # 시총(억)
                     
                     # 필터 1: 시가총액 1,000억 이상
                     if m_cap < 1000:
+                        logger.debug(f"[{symbol}] 건너뜀: 시가총액 부족 ({m_cap}억 < 1,000억)")
                         continue
                     
                     # 상세 정보 확인 (거래량 및 현재가)
                     price_info = get_current_price(symbol)
                     if not price_info:
+                        logger.debug(f"[{symbol}] 건너뜀: 현재가 정보 조회 실패")
                         continue
                         
                     # 필터 2: 거래량 급증 (전일 대비 200% 이상)
-                    if price_info["vol_rate"] >= 200:
+                    curr_vol_rate = price_info["vol_rate"]
+                    if curr_vol_rate >= 200:
                         stock_name = price_info["name"]
-                        logger.info(f"[조건 포착] {stock_name}({symbol}) | 시총: {m_cap}억 | 거래량증가: {price_info['vol_rate']}%")
+                        logger.info(f"★★★ [조건 포착] {stock_name}({symbol}) ★★★")
+                        logger.info(f" - 시총: {m_cap}억")
+                        logger.info(f" - 현재 거래량 증가율: {curr_vol_rate}% (기준: 200% 이상)")
                         
                         # 즉시 매수 실행 (1주 예시)
                         if buy_market_order(symbol, 1):
                             target_symbol = symbol
                             buy_price = price_info["price"]
                             logger.info(f"[매수완료] {stock_name} 매수가: {buy_price}")
-                            break # 한 종목에 집중
+                            found_match = True
+                            break 
+                        else:
+                            logger.error(f"[매수실패] {stock_name}({symbol}) 주문 중 오류 발생")
+                    else:
+                        logger.info(f"[{symbol}] {price_info['name']} 건너뜀: 거래량 증가율 미달 ({curr_vol_rate}% < 200%)")
                 
-                if target_symbol is None:
+                if not found_match:
+                    logger.info("이번 사이클에서 조건에 맞는 종목을 찾지 못했습니다.")
                     time.sleep(5) # 탐색 주기
             
             # 2. 모니터링 및 익절 단계: 매수한 종목이 있을 때
@@ -282,6 +305,8 @@ def main():
             sys.exit()
         except Exception as e:
             logger.error(f"루프 내 오류 발생: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             time.sleep(10)
 
 if __name__ == "__main__":
