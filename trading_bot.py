@@ -38,7 +38,7 @@ def get_access_token():
     body = {
         "grant_type": "client_credentials",
         "appkey": APP_KEY,
-        "secretkey": APP_SECRET
+        "appsecret": APP_SECRET  # secretkey에서 appsecret으로 변경
     }
     try:
         res = requests.post(url, headers=headers, data=json.dumps(body))
@@ -84,32 +84,30 @@ def get_header(tr_id, hashkey=None):
 
 def get_volume_rank():
     """거래량 상위 종목 스캔 (모의투자 미지원 대응)"""
-    # 모의투자의 경우 거래량 순위 API를 지원하지 않으므로 더미/관심 종목 반환
     if "vts" in URL_BASE:
         logger.info("모의투자 모드: 거래량 순위 API 대신 미리 지정된 종목 리스트를 사용합니다.")
-        # 모의투자에서 테스트 가능한 주요 종목 리스트 (삼성전자, SK하이닉스, NAVER 등)
         return [
-            {"mksc_shrn_iscd": "005930", "hts_avls": "4000000"}, # 삼성전자
-            {"mksc_shrn_iscd": "000660", "hts_avls": "1000000"}, # SK하이닉스
-            {"mksc_shrn_iscd": "035420", "hts_avls": "300000"},  # NAVER
-            {"mksc_shrn_iscd": "005380", "hts_avls": "500000"},  # 현대차
-            {"mksc_shrn_iscd": "068270", "hts_avls": "200000"}   # 셀트리온
+            {"mksc_shrn_iscd": "005930", "hts_avls": "4000000"},
+            {"mksc_shrn_iscd": "000660", "hts_avls": "1000000"},
+            {"mksc_shrn_iscd": "035420", "hts_avls": "300000"},
+            {"mksc_shrn_iscd": "005380", "hts_avls": "500000"},
+            {"mksc_shrn_iscd": "068270", "hts_avls": "200000"}
         ]
 
     path = "/uapi/domestic-stock/v1/quotations/volume-rank"
-    headers = get_header("FHPST01710000") # 거래량 순위 TR ID 수정
+    headers = get_header("FHPST01710000")
     params = {
-        "FID_COND_MRKT_DIV_CODE": "J",
-        "FID_COND_SCR_DIV_CODE": "20171",
-        "FID_INPUT_ISCD": "0000",
-        "FID_DIV_CLS_CODE": "0",
-        "FID_BLNG_CLS_CODE": "0",
-        "FID_TRGT_CLS_CODE": "111111111",
-        "FID_TRGT_EXLS_CLS_CODE": "0000000000",
-        "FID_INPUT_PRICE_1": "",
-        "FID_INPUT_PRICE_2": "",
-        "FID_VOL_CNT": "",
-        "FID_INPUT_DATE_1": ""
+        "fid_cond_mrkt_div_code": "J",
+        "fid_cond_scr_div_code": "20171",
+        "fid_input_iscd": "0000",
+        "fid_div_cls_code": "0",
+        "fid_blng_cls_code": "0",
+        "fid_trgt_cls_code": "111111111",
+        "fid_trgt_exls_cls_code": "0000000000",
+        "fid_input_price_1": "",
+        "fid_input_price_2": "",
+        "fid_vol_cnt": "",
+        "fid_input_date_1": ""
     }
     res = requests.get(URL_BASE + path, headers=headers, params=params)
     if res.status_code == 200:
@@ -122,17 +120,25 @@ def get_current_price(symbol):
     """현재가 및 상세 정보 조회"""
     path = "/uapi/domestic-stock/v1/quotations/inquire-price"
     headers = get_header("FHKST01010100")
-    params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+    params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": symbol}
     res = requests.get(URL_BASE + path, headers=headers, params=params)
     if res.status_code == 200:
         output = res.json().get("output")
         if output:
-            return {
-                "price": int(output["stck_prpr"]),
-                "vol_rate": float(output["prdy_vol_vrss_prcnt"]),
-                "market_cap": int(output["hts_avls"]),
-                "name": output.get("hts_kor_isnm", symbol)
-            }
+            try:
+                # 전일 대비 거래량 비율 (prdy_vol_vrss_prcnt 대신 vol_tnrt 또는 prdy_vrss_vol_rate 확인 필요)
+                # FHKST01010100 응답에는 prdy_vol_vrss (전일 대비 거래량)은 있으나 비율은 prdy_ctrt (전일 대비율)과 헷갈릴 수 있음.
+                # 거래량 증가율은 보통 prdy_vol_vrss_prcnt가 맞으나 필드가 없는 경우 0으로 처리하거나 다른 필드 사용
+                vol_rate = float(output.get("prdy_vol_vrss_prcnt", 0)) 
+                
+                return {
+                    "price": int(output["stck_prpr"]),
+                    "vol_rate": vol_rate,
+                    "market_cap": int(output.get("hts_avls", 0)),
+                    "name": output.get("hts_kor_isnm", symbol)
+                }
+            except (KeyError, ValueError) as e:
+                logger.error(f"데이터 파싱 오류 ({symbol}): {e}")
     return None
 
 def buy_market_order(symbol, qty=1):
