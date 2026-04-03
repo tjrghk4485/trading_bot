@@ -38,12 +38,13 @@ def get_access_token():
     body = {
         "grant_type": "client_credentials",
         "appkey": APP_KEY,
-        "appsecret": APP_SECRET  # secretkey에서 appsecret으로 변경
+        "appsecret": APP_SECRET
     }
     try:
         res = requests.post(url, headers=headers, data=json.dumps(body))
-        if res.status_code == 200:
-            token = res.json().get("access_token")
+        res_data = res.json()
+        if res.status_code == 200 and "access_token" in res_data:
+            token = res_data.get("access_token")
             logger.info("Access Token 발급 성공")
             return token
         else:
@@ -62,8 +63,9 @@ def get_hashkey(body):
         'appsecret': APP_SECRET,
     }
     res = requests.post(url, headers=headers, data=json.dumps(body))
-    if res.status_code == 200:
-        return res.json()["hashkey"]
+    res_data = res.json()
+    if res.status_code == 200 and "hashkey" in res_data:
+        return res_data["hashkey"]
     else:
         logger.error(f"Hashkey 발급 실패: {res.text}")
         return None
@@ -111,9 +113,13 @@ def get_volume_rank():
     }
     res = requests.get(URL_BASE + path, headers=headers, params=params)
     if res.status_code == 200:
-        return res.json().get("output", [])
+        res_data = res.json()
+        if res_data.get("rt_cd") == "0":
+            return res_data.get("output", [])
+        else:
+            logger.error(f"거래량 순위 조회 실패 (rt_cd={res_data.get('rt_cd')}): {res_data.get('msg1')}")
     else:
-        logger.error(f"거래량 순위 조회 실패: {res.text}")
+        logger.error(f"거래량 순위 API 에러: {res.text}")
     return []
 
 def get_current_price(symbol):
@@ -123,22 +129,24 @@ def get_current_price(symbol):
     params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": symbol}
     res = requests.get(URL_BASE + path, headers=headers, params=params)
     if res.status_code == 200:
-        output = res.json().get("output")
-        if output:
-            try:
-                # 전일 대비 거래량 비율 (prdy_vol_vrss_prcnt 대신 vol_tnrt 또는 prdy_vrss_vol_rate 확인 필요)
-                # FHKST01010100 응답에는 prdy_vol_vrss (전일 대비 거래량)은 있으나 비율은 prdy_ctrt (전일 대비율)과 헷갈릴 수 있음.
-                # 거래량 증가율은 보통 prdy_vol_vrss_prcnt가 맞으나 필드가 없는 경우 0으로 처리하거나 다른 필드 사용
-                vol_rate = float(output.get("prdy_vol_vrss_prcnt", 0)) 
-                
-                return {
-                    "price": int(output["stck_prpr"]),
-                    "vol_rate": vol_rate,
-                    "market_cap": int(output.get("hts_avls", 0)),
-                    "name": output.get("hts_kor_isnm", symbol)
-                }
-            except (KeyError, ValueError) as e:
-                logger.error(f"데이터 파싱 오류 ({symbol}): {e}")
+        res_data = res.json()
+        if res_data.get("rt_cd") == "0":
+            output = res_data.get("output")
+            if output:
+                try:
+                    vol_rate = float(output.get("prdy_vol_vrss_prcnt", 0)) 
+                    return {
+                        "price": int(output["stck_prpr"]),
+                        "vol_rate": vol_rate,
+                        "market_cap": int(output.get("hts_avls", 0)),
+                        "name": output.get("hts_kor_isnm", symbol)
+                    }
+                except (KeyError, ValueError) as e:
+                    logger.error(f"데이터 파싱 오류 ({symbol}): {e}")
+        else:
+            logger.error(f"현재가 조회 실패 ({symbol}, rt_cd={res_data.get('rt_cd')}): {res_data.get('msg1')}")
+    else:
+        logger.error(f"현재가 API 에러 ({symbol}): {res.text}")
     return None
 
 def buy_market_order(symbol, qty=1):
