@@ -134,7 +134,7 @@ def get_current_price(symbol):
             output = res_data.get("output")
             if output:
                 try:
-                    vol_rate = float(output.get("prdy_vol_vrss_prcnt", 0)) 
+                    vol_rate = float(output.get("prdy_vrss_vol_rate", 0)) 
                     return {
                         "price": int(output["stck_prpr"]),
                         "vol_rate": vol_rate,
@@ -254,7 +254,7 @@ def main():
                         
                     # 필터 2: 거래량 급증 (전일 대비 200% 이상)
                     curr_vol_rate = price_info["vol_rate"]
-                    if curr_vol_rate >= 200:
+                    if curr_vol_rate >= 10:
                         stock_name = price_info["name"]
                         logger.info(f"★★★ [조건 포착] {stock_name}({symbol}) ★★★")
                         logger.info(f" - 시총: {m_cap}억")

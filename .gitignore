@@ -1,7 +1,15 @@
-# KIS Trading Bot Git Ignore
+# 모든 파일을 기본적으로 무시
+/*
+
+# 다음 파일들만 추적 (Whitelist)
+!/fast_scalper.py
+!/README.md
+!/GEMINI.md
+!/.gitignore
+
+# 예외적으로 무시할 폴더 및 민감 정보 (혹시 모를 중복 방지)
 .env
-trading_log.txt
+.venv/
+logs/
 __pycache__/
 *.pyc
-.vscode/
-.idea/
