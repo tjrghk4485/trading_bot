@@ -85,36 +85,44 @@ class CandidateTracker:
     def __init__(self, code, name):
         self.code = code
         self.name = name
-        self.history = []  # 최근 틱 데이터 [(price, velocity, rate), ...]
+        self.history = []  # 최근 틱 데이터 [(price, velocity, rate, time), ...]
         self.max_history = 5
 
     def add_tick(self, price, velocity, rate):
+        now = datetime.datetime.now()
+        
+        # 데이터 신선도 체크 (마지막 틱이 30초 이상 지났으면 히스토리 초기화)
+        if self.history:
+            last_time = self.history[-1][3]
+            if (now - last_time).total_seconds() > 30:
+                self.history = []
+        
         if not self.history:
-            self.history.append((price, velocity, rate))
+            self.history.append((price, velocity, rate, now))
             return "INIT"
         
         # 틱 데이터 저장
-        self.history.append((price, velocity, rate))
+        self.history.append((price, velocity, rate, now))
         if len(self.history) > self.max_history:
             self.history.pop(0)
 
         # 점수 계산 (최근 기록을 순회하며 점수 합산)
         total_score = 0
         for i in range(1, len(self.history)):
-            p_prev, v_prev, _ = self.history[i-1]
-            p_curr, v_curr, _ = self.history[i]
+            p_prev, v_prev, _, _ = self.history[i-1]
+            p_curr, v_curr, _, _ = self.history[i]
             
             # 가격이 오르면서 거래가 터지는 경우 (가장 높은 점수)
-            if p_curr > p_prev and v_curr >= 200: total_score += 1.0
+            if p_curr > p_prev and v_curr >= 100: total_score += 1.0
             # 가격만 오르는 경우
             elif p_curr > p_prev: total_score += 0.5
             # 가격은 그대로인데 거래가 터지는 경우 (매물 소화)
-            elif p_curr == p_prev and v_curr >= 200: total_score += 0.3
+            elif p_curr == p_prev and v_curr >= 100: total_score += 0.3
             # 가격이 떨어지는 경우 (패널티 - 매도세로 판단)
             elif p_curr < p_prev: total_score -= 1.0
 
-        # 5틱 중 포인트 합계가 2.5점 이상이면 매수 신호
-        if total_score >= 2.5:
+        # 5틱 중 포인트 합계가 2.0점 이상이면 매수 신호 (민감도 상향)
+        if total_score >= 2.0:
             return "BUY_SIGNAL"
         return "WATCHING"
 
@@ -238,8 +246,8 @@ def get_surging_stocks():
                 curr_amt = int(s.get('acml_tr_pbmn', 0))
                 power = float(s.get('vol_inrt', 0))
                 
-                # 분석 범위: 1.5% ~ 5.0%
-                if 1.5 <= rate <= 5.0 and curr_amt > 2000000000:
+                # 분석 범위: 1.0% ~ 7.0% (더 넓은 시야)
+                if 1.0 <= rate <= 7.0 and curr_amt > 1000000000:
 
                     velocity = curr_amt - PREV_DATA.get(code, curr_amt)
                     PREV_DATA[code] = curr_amt
@@ -247,7 +255,7 @@ def get_surging_stocks():
                         target = {"code": code, "name": name, "price": price, "rate": rate,
                                   "amt_억": curr_amt // 100000000, "velocity_백만": velocity // 1000000, "power": power}
                         targets.append(target)
-                        if target['velocity_백만'] >= 30: save_to_history(target)
+                        if target['velocity_백만'] >= 10: save_to_history(target)
             except: continue
         return targets, "정상"
     except Exception as e: return [], f"오류:{str(e)[:100]}"
@@ -302,31 +310,77 @@ def execute_simulated_buy(code, name, price):
 def manage_exit_strategy(code, curr_price):
     global TOTAL_PROFIT_LOSS
     if code not in MY_PORTFOLIO: return
-    
+
     trade = MY_PORTFOLIO[code]
     entry_price = trade['entry_price']
     entry_time = trade['time']
     profit_rate = (curr_price - entry_price) / entry_price * 100
-    
+
     # 시간 체크 (진입 후 경과 시간)
     elapsed_time = (datetime.datetime.now() - entry_time).total_seconds() / 60
-    
+
     if curr_price > trade['highest_price']: trade['highest_price'] = curr_price
 
-    # 1. 목표 달성 (+1.75% 익절)
-    if profit_rate >= 1.75:
+    # [0] 슈퍼 랠리 홀딩 (30초 내 1.5% 돌파 시 90초까지 째기)
+    is_super_rally = trade.get('super_rally', False)
+    if not is_super_rally and elapsed_time <= 0.5 and profit_rate >= 1.5:
+        trade['super_rally'] = True
+        logger.info(f"🚀 [슈퍼랠리] {trade['name']} 기세 폭발! 90초까지 홀딩 (현재: {profit_rate:+.2f}%)")
+        return False
+
+    if is_super_rally:
+        # 1.5% 붕괴 시 즉시 익절 (수익 보전)
+        if profit_rate < 1.5:
+            if sell_market_order(code, 1):
+                TOTAL_PROFIT_LOSS += profit_rate
+                logger.info(f"💰 [슈퍼랠리 조기종료] {trade['name']} | {profit_rate:+.2f}% | 누적: {TOTAL_PROFIT_LOSS:+.2f}%")
+                del MY_PORTFOLIO[code]
+                if code in TRACKER_DICT: del TRACKER_DICT[code]
+                return True
+        # 90초(1.5분) 도달 시 전량 익절
+        elif elapsed_time >= 1.5:
+            if sell_market_order(code, 1):
+                TOTAL_PROFIT_LOSS += profit_rate
+                logger.info(f"💰 [슈퍼랠리 완수] {trade['name']} | {profit_rate:+.2f}% | 누적: {TOTAL_PROFIT_LOSS:+.2f}%")
+                del MY_PORTFOLIO[code]
+                if code in TRACKER_DICT: del TRACKER_DICT[code]
+                return True
+        return False # 90초 전까지는 계속 홀딩
+
+    # [1] 목표 익절 (Target Profit)
+    if profit_rate >= 1.5:
+
         if sell_market_order(code, 1):
             TOTAL_PROFIT_LOSS += profit_rate
             logger.info(f"💰 [익절 완료] {trade['name']} | 수익률: {profit_rate:.2f}% | 당일 누적: {TOTAL_PROFIT_LOSS:.2f}% | 매도가: {curr_price:,}")
             del MY_PORTFOLIO[code]
             if code in TRACKER_DICT: del TRACKER_DICT[code]
             return True
+    # [2] 단계별 타임컷 (Time-cut Strategy)
 
-    # 2. 타임컷 (15분 경과 시 +0.5% 이상이면 탈출)
-    elif elapsed_time >= 15.0 and profit_rate >= 0.5:
+    # (1) 10분 경과: -0.25% 이상이면 탈출
+    elif elapsed_time >= 10.0:
         if sell_market_order(code, 1):
             TOTAL_PROFIT_LOSS += profit_rate
-            logger.info(f"⏱️ [타임컷 익절] {trade['name']} (15분 경과) | 수익률: {profit_rate:.2f}% | 당일 누적: {TOTAL_PROFIT_LOSS:.2f}% | 매도가: {curr_price:,}")
+            logger.info(f"⏱️ [타임컷:10분] {trade['name']} | {profit_rate:+.2f}% | 누적: {TOTAL_PROFIT_LOSS:+.2f}%")
+            del MY_PORTFOLIO[code]
+            if code in TRACKER_DICT: del TRACKER_DICT[code]
+            return True
+
+    # (2) 6분 경과: 본전(0%) 이상이면 탈출
+    elif elapsed_time >= 6.0 and profit_rate >= 0.12:
+        if sell_market_order(code, 1):
+            TOTAL_PROFIT_LOSS += profit_rate
+            logger.info(f"⏱️ [타임컷:6분] {trade['name']} | {profit_rate:+.2f}% | 누적: {TOTAL_PROFIT_LOSS:+.2f}%")
+            del MY_PORTFOLIO[code]
+            if code in TRACKER_DICT: del TRACKER_DICT[code]
+            return True
+        
+    # (3) 3분 경과: +0.25% 이상이면 익절 탈출
+    elif elapsed_time >= 3.0 and profit_rate >= 0.45:
+        if sell_market_order(code, 1):
+            TOTAL_PROFIT_LOSS += profit_rate
+            logger.info(f"⏱️ [타임컷:3분] {trade['name']} | {profit_rate:+.2f}% | 누적: {TOTAL_PROFIT_LOSS:+.2f}%")
             del MY_PORTFOLIO[code]
             if code in TRACKER_DICT: del TRACKER_DICT[code]
             return True
@@ -407,7 +461,7 @@ def main():
             
             # 4. 스캔 모드 (보유 종목 없고, 10:30 이전일 때만 신규 매수)
             else:
-                if current_time < "1030":
+                if current_time < "1520":
                     surging, msg = get_surging_stocks()
                     if surging:
                         process_trading_logic(surging)
